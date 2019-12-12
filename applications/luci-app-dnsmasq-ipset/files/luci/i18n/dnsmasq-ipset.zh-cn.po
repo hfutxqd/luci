@@ -1,7 +1,7 @@
 msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8\n"
 
-msgstr "IP-Set settings for DNSMasq-full"
+msgid "IP-Set settings for DNSMasq-full"
 msgstr "DNSMasq-full IP-Set 设置"
 
 msgid "IP-Set Settings"
