@@ -6,6 +6,7 @@ START=95
 STOP=01
 
 CONFIGURATION=AdGuardHome
+CRON_FILE=/etc/crontabs/root
 EXTRA_COMMANDS="do_redirect"
 EXTRA_HELP="        do_redirect 0 or 1"
 set_forward_dnsmasq()
@@ -135,7 +136,7 @@ get_tz()
 
 rm_port53()
 {
-	AdGuardHome_PORT=$(awk '/  port:/{printf($2)}' $configpath)
+	local AdGuardHome_PORT=$(config_editor "dns.port" "" "$configpath" "1")
 	dnsmasq_port=$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)
 	if [ -z "$dnsmasq_port" ]; then
 	dnsmasq_port="53"
@@ -155,7 +156,7 @@ rm_port53()
 
 use_port53()
 {
-	AdGuardHome_PORT=$(awk '/  port:/{printf($2)}' $configpath)
+	local AdGuardHome_PORT=$(config_editor "dns.port" "" "$configpath" "1")
 	dnsmasq_port=$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)
 	if [ -z "$dnsmasq_port" ]; then
 		dnsmasq_port="53"
@@ -187,7 +188,7 @@ do_redirect()
 		echo -n "0">/var/run/AdGredir
 	fi
 	config_get configpath $CONFIGURATION configpath "/etc/AdGuardHome.yaml"
-	AdGuardHome_PORT=$(awk '/  port:/{printf($2)}' $configpath)
+	AdGuardHome_PORT=$(config_editor "dns.port" "" "$configpath" "1")
 	if [ -z "$AdGuardHome_PORT" ]; then
 		AdGuardHome_PORT="0"
 	fi
@@ -195,6 +196,7 @@ do_redirect()
 	config_get "old_redirect" "$section" "old_redirect" "none"
 	config_get "old_port" "$section" "old_port" "0"
 	config_get "old_enabled" "$section" "old_enabled" "0"
+	uci get dhcp.@dnsmasq[0].port 2>&1 >/dev/null || uci set dhcp.@dnsmasq[0].port="53" 2>&1 >/dev/null
 	if [ "$old_enabled" = "1" -a "$old_redirect" == "exchange" ]; then
 		AdGuardHome_PORT=$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)
 	fi
@@ -277,22 +279,27 @@ get_filesystem()
 
 config_editor()
 {
-	awk -v yaml="$1" -v value="$2" -v file="$3" '
+	awk -v yaml="$1" -v value="$2" -v file="$3" -v ro="$4" '
 	BEGIN{split(yaml,part,"\.");s="";i=1;l=length(part);}
     {
-        if (match($0,s""part[i]))
+        if (match($0,s""part[i]":"))
         {
             if (i==l)
             {
-                split($0,t,":");
-                system("sed -i '\''"FNR"c \\"t[1]": "value"'\'' "file);
-                exit;
+                split($0,t,": ");
+				if (ro==""){
+				system("sed -i '\''"FNR"c \\"t[1]": "value"'\'' "file);
+				}else{
+				print(t[2]);
+				}
+				exit;
             }
             s=s"[- ]{2}";
             i++;
         }
     }' $3
 }
+
 boot_service() {
 	config_load "${CONFIGURATION}"
 	config_get waitonboot $CONFIGURATION waitonboot "0"
@@ -337,7 +344,7 @@ start_service() {
 	config_get backupwd $CONFIGURATION backupwd "0"
 	if [ "$backupwd" == "1" ] && [ ! -d "$workdir/data" ]; then
 		config_get backupwdpath $CONFIGURATION backupwdpath "/usr/bin/AdGuardHome"
-		cp -r -f $backupwdpath/data $workdir/
+		cp -u -r -f $backupwdpath/data $workdir
 	fi
 	mkdir -p $workdir/data
 	echo -e "$configpath\n$binpath">/lib/upgrade/keep.d/luci-app-adguardhome
@@ -407,6 +414,7 @@ start_service() {
 			echo "no config start watching"
 		fi
 	fi
+	do_crontab
 	echo "AdGuardHome turn on"
 	(sleep 10 && [ -z "$(pgrep $binpath)" ] && logger "AdGuardHome" "no process in 10s cancel redirect" && do_redirect 0 )&
 	fi
@@ -419,25 +427,60 @@ reload_service()
 	if [ "$enabled" == "0" ]; then
 		procd_kill $CONFIGURATION
 		do_redirect 0
+		do_crontab
 		config_get hashpass $CONFIGURATION hashpass ""
 		if [ -n "$hashpass" ]; then
 			config_editor "users.password" "$hashpass" "$configpath"
 			uci set $CONFIGURATION.$CONFIGURATION.hashpass=""
 		fi
 	else
+		procd_send_signal $CONFIGURATION
 		start
 	fi
 	echo "enabled=$enabled"
+}
+
+del_querylog(){
+local btarget=$(ls $backupwdpath/data | grep -F "querylog.json" | sort -r | head -n 1)
+local wtarget=$(ls $workdir/data | grep -F "querylog.json" | sort -r | head -n 1)
+if [ "$btarget"x == "$wtarget"x ]; then
+	[ -z "$btarget" ] && return 1
+	rm -f $workdir/data/$wtarget
+	rm -f $backupwdpath/data/$btarget
+	return 0
+fi
+if [ "$btarget" \> "$wtarget" ]; then
+	rm -f $backupwdpath/data/$btarget 
+	return 0
+else
+	rm -f $workdir/data/$wtarget
+	return 0
+fi
 }
 stop_service()
 {
 	config_load "${CONFIGURATION}"
 	do_redirect 0
+	do_crontab
 	config_get backupwd $CONFIGURATION backupwd "0"
 	if [ "$backupwd" == "1" ]; then
 		config_get backupwdpath $CONFIGURATION backupwdpath "/usr/bin/AdGuardHome"
+		mkdir -p $backupwdpath
 		config_get workdir $CONFIGURATION workdir "/usr/bin/AdGuardHome"
-		cp -r -f $workdir/data $backupwdpath/
+		while :
+		do
+			cpret=$(cp -u -r -f $workdir/data $backupwdpath 2>&1)
+			echo "$cpret"
+			echo "$cpret" | grep "no space left on device"
+			if [ "$?" == "0" ]; then
+				echo "磁盘已满,删除log重试中"
+				del_querylog && continue
+				rm -f -r $backupwdpath/data/filters
+				rm -f -r $workdir/data/filters && continue
+				echo "backup failed"
+			fi
+			break
+		done
 	fi
 	echo "AdGuardHome turn off"
 	echo "enabled=$enabled"
@@ -446,5 +489,54 @@ boot() {
 	rc_procd boot_service "$@"
 	if eval "type service_started" 2>/dev/null >/dev/null; then
 		service_started
+	fi
+}
+do_crontab(){
+crontab_updatecore
+crontab_cutquerylog
+}
+crontab_updatecore(){
+	config_get autoupdate $CONFIGURATION autoupdate "0"
+	local line=$(grep "/usr/share/AdGuardHome/update_core.sh" $CRON_FILE)
+	if [ -n "$line" -a ${line:0:1} != "#" ]; then
+		if [ $autoupdate -eq 1 ]; then
+			return
+		else
+			sed -i '\,/usr/share/AdGuardHome/update_core.sh,'d $CRON_FILE
+			echo "#$line" >> $CRON_FILE
+			/etc/init.d/cron restart
+		fi
+	else
+		if [ $autoupdate -eq 1 ]; then
+			[ -z "$line" ] && line="#30 3 * * * /usr/share/AdGuardHome/update_core.sh 2>&1"
+			sed -i '\,/usr/share/AdGuardHome/update_core.sh,'d $CRON_FILE
+			echo "${line:1}" >> $CRON_FILE
+			/etc/init.d/cron restart
+		else
+			return
+		fi
+	fi
+}
+crontab_cutquerylog(){
+	config_get cutquerylog $CONFIGURATION cutquerylog "0"
+	config_get workdir $CONFIGURATION workdir "/usr/bin/AdGuardHome"
+	local line=$(grep "tail -n [0-9]* $workdir/data/querylog.json > $workdir/data/querylog.json" $CRON_FILE)
+	if [ -n "$line" -a "${line:0:1}" != "#" ]; then
+		if [ $cutquerylog -eq 1 ]; then
+			return
+		else
+			sed -i "\,tail -n [0-9]* .*/data/querylog.json > .*/data/querylog.json,d" $CRON_FILE
+			echo "#$line" >> $CRON_FILE
+			/etc/init.d/cron restart
+		fi
+	else
+		if [ $cutquerylog -eq 1 ]; then
+			[ -z "$line" ] && line="#0 * * * * tail -n 2000 $workdir/data/querylog.json > $workdir/data/querylog.json"
+			sed -i "\,tail -n [0-9]* .*/data/querylog.json > .*/data/querylog.json,d" $CRON_FILE
+			echo "${line:1}" >> $CRON_FILE
+			/etc/init.d/cron restart
+		else
+			return
+		fi
 	fi
 }

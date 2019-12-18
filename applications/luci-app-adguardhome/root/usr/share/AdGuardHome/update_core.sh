@@ -8,7 +8,7 @@ fi
 mkdir -p ${binpath%/*}
 configpath=$(uci get AdGuardHome.AdGuardHome.configpath)
 if [ -z "$configpath" ]; then
-uci get AdGuardHome.AdGuardHome.configpath="/etc/AdGuardHome.yaml"
+uci set AdGuardHome.AdGuardHome.configpath="/etc/AdGuardHome.yaml"
 configpath="/etc/AdGuardHome.yaml"
 fi
 mkdir -p ${configpath%/*}
@@ -25,8 +25,10 @@ clean_log(){
 
 check_latest_version(){
 	latest_ver="$(wget -O- https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest 2>/dev/null|grep -E 'tag_name' |grep -E 'v[0-9.]+' -o 2>/dev/null)"
-	[ -z "${latest_ver}" ] && echo -e "\nFailed to check latest version, please try again later."  && exit 1
-	
+	if [ -z "${latest_ver}" ]; then
+		wget -V | grep +https >/dev/null || (opkg update && opkg remove wget-nossl --force-depends && opkg install wget && check_latest_version && exit 0) 
+		echo -e "\nFailed to check latest version, please try again later."  && exit 1
+	fi
 	if [ -f "$configpath" ]; then
 		now_ver="$($binpath -c $configpath --check-config 2>&1| grep -m 1 -E 'v[0-9.]+' -o)"
 	elif [ -f "$binpath" ]; then
@@ -115,7 +117,7 @@ doupx(){
 	Arch="powerpc64"
 	;;
 	*)
-	echo -e "error not support $Archt" 
+	echo -e "error not support $Archt if you can use offical release please issue a bug" 
 	exit 1
 	;;
 	esac
@@ -179,45 +181,57 @@ doupdate_core(){
 	exit 1
 	;;
 	*)
-	echo -e "error not support $Archt" 
-	
+	echo -e "error not support $Archt if you can use offical release please issue a bug" 
 	exit 1
 	;;
 	esac
-	echo -e "start download ${latest_ver}/AdGuardHome_linux_${Arch}.tar.gz" 
-	wget-ssl --no-check-certificate -t 2 -T 20 -O /tmp/AdGuardHomeupdate/AdGuardHome_linux_${Arch}.tar.gz "https://github.com/AdguardTeam/AdGuardHome/releases/download/${latest_ver}/AdGuardHome_linux_${Arch}.tar.gz" 2>&1
-	if [ "$?" != "0" ]; then
-		echo "download failed"
-	fi
-	tar -zxf "/tmp/AdGuardHomeupdate/AdGuardHome_linux_${Arch}.tar.gz" -C "/tmp/AdGuardHomeupdate/"
-	if [ ! -e "/tmp/AdGuardHomeupdate/AdGuardHome" ]; then
-		echo -e "Failed to download core." 
-		rm -rf "/tmp/AdGuardHomeupdate" >/dev/null 2>&1
-		exit 1
-	else 
-		echo -e "download success start copy" 
-		if [ ! -z "$upxflag" ]; then
-		echo -e "start upx may take a long time" 
-		doupx
-        #maybe need chmod
-		/tmp/upx-${upx_latest_ver}-${Arch}_linux/upx $upxflag /tmp/AdGuardHomeupdate/AdGuardHome/AdGuardHome
-		rm -rf /tmp/upx-${upx_latest_ver}-${Arch}_linux
+	echo -e "start download" 
+	while read link
+	do
+		eval link=$link
+		wget-ssl --no-check-certificate -t 2 -T 20 -O /tmp/AdGuardHomeupdate/${link##*/} "$link" 2>&1
+		if [ "$?" != "0" ]; then
+			echo "download failed try another download"
+			rm -f /tmp/AdGuardHomeupdate/${link##*/}
+		else
+			local success="1"
+			break
 		fi
-		echo -e "start copy" 
-		/etc/init.d/AdGuardHome stop
-		rm "$binpath"
-		mv -f /tmp/AdGuardHomeupdate/AdGuardHome/AdGuardHome "$binpath"
-		if [ "$?" == "1" ]; then
-			echo "mv failed maybe not enough space please use upx or change bin to /tmp/AdGuardHome" 
+	done < "/usr/share/AdGuardHome/links.txt"
+	[ -z "$success" ] && echo "no download success" && exit 1
+	if [ "${link##*.}" == "gz" ]; then
+		tar -zxf "/tmp/AdGuardHomeupdate/${link##*/}" -C "/tmp/AdGuardHomeupdate/"
+		if [ ! -e "/tmp/AdGuardHomeupdate/AdGuardHome" ]; then
+			echo -e "Failed to download core." 
+			rm -rf "/tmp/AdGuardHomeupdate" >/dev/null 2>&1
 			exit 1
 		fi
-		/etc/init.d/AdGuardHome start
+		downloadbin="/tmp/AdGuardHomeupdate/AdGuardHome/AdGuardHome"
+	else
+		downloadbin="/tmp/AdGuardHomeupdate/${link##*/}"
 	fi
+	chmod 755 $downloadbin
+	echo -e "download success start copy" 
+	if [ ! -z "$upxflag" ]; then
+		echo -e "start upx may take a long time" 
+		doupx
+		/tmp/upx-${upx_latest_ver}-${Arch}_linux/upx $upxflag $downloadbin
+		rm -rf /tmp/upx-${upx_latest_ver}-${Arch}_linux
+	fi
+	echo -e "start copy" 
+	/etc/init.d/AdGuardHome stop
+	rm "$binpath"
+	mv -f "$downloadbin" "$binpath"
+	if [ "$?" == "1" ]; then
+		echo "mv failed maybe not enough space please use upx or change bin to /tmp/AdGuardHome" 
+		exit 1
+	fi
+	/etc/init.d/AdGuardHome start
 	rm -rf "/tmp/AdGuardHomeupdate" >/dev/null 2>&1
 	echo -e "Succeeded in updating core." 
 	uci set AdGuardHome.AdGuardHome.version="${latest_ver}"
 	uci commit AdGuardHome
-	echo -e "Local version: ${now_ver}, cloud version: ${latest_ver}.\n" 
+	echo -e "Local version: ${latest_ver}, cloud version: ${latest_ver}.\n" 
 }
 
 main(){
