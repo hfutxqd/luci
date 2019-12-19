@@ -6,13 +6,7 @@ uci set AdGuardHome.AdGuardHome.binpath="/tmp/AdGuardHome/AdGuardHome"
 binpath="/tmp/AdGuardHome/AdGuardHome"
 fi
 mkdir -p ${binpath%/*}
-configpath=$(uci get AdGuardHome.AdGuardHome.configpath)
-if [ -z "$configpath" ]; then
-uci set AdGuardHome.AdGuardHome.configpath="/etc/AdGuardHome.yaml"
-configpath="/etc/AdGuardHome.yaml"
-fi
-mkdir -p ${configpath%/*}
-upxflag=$(uci get AdGuardHome.AdGuardHome.upxflag)
+upxflag=$(uci get AdGuardHome.AdGuardHome.upxflag 2>/dev/null)
 
 check_if_already_running(){
 	running_tasks="$(ps |grep "AdGuardHome" |grep "update_core" |grep -v "grep" |awk '{print $1}' |wc -l)"
@@ -29,30 +23,16 @@ check_latest_version(){
 		wget -V | grep +https >/dev/null || (opkg update && opkg remove wget-nossl --force-depends && opkg install wget && check_latest_version && exit 0) 
 		echo -e "\nFailed to check latest version, please try again later."  && exit 1
 	fi
-	if [ -f "$configpath" ]; then
-		now_ver="$($binpath -c $configpath --check-config 2>&1| grep -m 1 -E 'v[0-9.]+' -o)"
-	elif [ -f "$binpath" ]; then
-		chmod a+x $binpath
-		$binpath -l /tmp/AdGuardHometmp.log &
-		if [ "$?" == "0" ]; then
-			pid=$!
-			sleep 2
-			kill $pid
-			now_ver="$(grep -m 1 -E 'v[0-9.]+' -o /tmp/AdGuardHometmp.log)"
-			rm /tmp/AdGuardHometmp.log
-		else
-			echo "bin file may broken"
-		fi
-	fi
-	if [ "${latest_ver}"x != "${now_ver}"x ]; then
+	touch /var/run/AdGfakeconfig 
+	now_ver="$($binpath -c /var/run/AdGfakeconfig --check-config 2>&1| grep -m 1 -E 'v[0-9.]+' -o)"
+	rm /var/run/AdGfakeconfig
+	if [ "${latest_ver}"x != "${now_ver}"x ] || [ "$1" == "force" ]; then
 		clean_log
 		echo -e "Local version: ${now_ver}., cloud version: ${latest_ver}." 
 		doupdate_core
 	else
 			echo -e "\nLocal version: ${now_ver}, cloud version: ${latest_ver}." 
 			echo -e "You're already using the latest version." 
-			uci set AdGuardHome.AdGuardHome.version="${latest_ver}"
-			uci commit AdGuardHome
 			if [ ! -z "$upxflag" ]; then
 				filesize=$(ls -l $binpath | awk '{ print $5 }')
 				if [ $filesize -gt 8000000 ]; then
@@ -186,9 +166,10 @@ doupdate_core(){
 	;;
 	esac
 	echo -e "start download" 
+	grep -v "^#" /usr/share/AdGuardHome/links.txt >/tmp/run/AdHlinks.txt
 	while read link
 	do
-		eval link=$link
+		eval link="$link"
 		wget-ssl --no-check-certificate -t 2 -T 20 -O /tmp/AdGuardHomeupdate/${link##*/} "$link" 2>&1
 		if [ "$?" != "0" ]; then
 			echo "download failed try another download"
@@ -196,8 +177,9 @@ doupdate_core(){
 		else
 			local success="1"
 			break
-		fi
-	done < "/usr/share/AdGuardHome/links.txt"
+		fi 
+	done < "/tmp/run/AdHlinks.txt"
+	rm /tmp/run/AdHlinks.txt
 	[ -z "$success" ] && echo "no download success" && exit 1
 	if [ "${link##*.}" == "gz" ]; then
 		tar -zxf "/tmp/AdGuardHomeupdate/${link##*/}" -C "/tmp/AdGuardHomeupdate/"
@@ -212,7 +194,7 @@ doupdate_core(){
 	fi
 	chmod 755 $downloadbin
 	echo -e "download success start copy" 
-	if [ ! -z "$upxflag" ]; then
+	if [ -n "$upxflag" ]; then
 		echo -e "start upx may take a long time" 
 		doupx
 		/tmp/upx-${upx_latest_ver}-${Arch}_linux/upx $upxflag $downloadbin
@@ -229,13 +211,11 @@ doupdate_core(){
 	/etc/init.d/AdGuardHome start
 	rm -rf "/tmp/AdGuardHomeupdate" >/dev/null 2>&1
 	echo -e "Succeeded in updating core." 
-	uci set AdGuardHome.AdGuardHome.version="${latest_ver}"
-	uci commit AdGuardHome
 	echo -e "Local version: ${latest_ver}, cloud version: ${latest_ver}.\n" 
 }
 
 main(){
 	check_if_already_running
-	check_latest_version
+	check_latest_version $1
 }
-	main
+	main $1

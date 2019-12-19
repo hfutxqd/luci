@@ -25,8 +25,8 @@ msgstr "已更新"
 msgid "Check..."
 msgstr "检查中..."
 
-msgid "core version got last time:"
-msgstr "上次检测到的主程序版本: "
+msgid "core version:"
+msgstr "核心版本:"
 
 msgid "Redirect"
 msgstr "重定向"
@@ -210,3 +210,9 @@ msgstr "删除gfw列表"
 
 msgid "Del"
 msgstr "删除"
+
+msgid "Please add log path in config to enable log"
+msgstr "请在设置里填写日志路径以启用日志"
+
+msgid "Force update"
+msgstr "强制更新"
