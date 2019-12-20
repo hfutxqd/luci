@@ -70,7 +70,9 @@ o = s:option(Value, "binpath", translate("Bin Path"), translate("AdGuardHome Bin
 o.default     = "/usr/bin/AdGuardHome/AdGuardHome"
 o.datatype    = "string"
 o.optional = false
+o.rmempty=false
 o.validate=function(self, value)
+if value=="" then return nil end
 if fs.stat(value,"type")=="dir" then
 	fs.rmdir(value)
 end
@@ -100,7 +102,9 @@ o = s:option(Value, "configpath", translate("Config Path"), translate("AdGuardHo
 o.default     = "/etc/AdGuardHome.yaml"
 o.datatype    = "string"
 o.optional = false
+o.rmempty=false
 o.validate=function(self, value)
+if value==nil then return nil end
 if fs.stat(value,"type")=="dir" then
 	fs.rmdir(value)
 end
@@ -119,7 +123,9 @@ o = s:option(Value, "workdir", translate("Work dir"), translate("AdGuardHome wor
 o.default     = "/usr/bin/AdGuardHome"
 o.datatype    = "string"
 o.optional = false
+o.rmempty=false
 o.validate=function(self, value)
+if value=="" then return nil end
 if fs.stat(value,"type")=="reg" then
 	if m.message then
 	m.message =m.message.."\nerror!work dir is a file"
@@ -241,4 +247,26 @@ o.write = function(self, section, value)
 	fs.writefile("/usr/share/AdGuardHome/links.txt", value:gsub("\r\n", "\n"))
 end
 fs.writefile("/var/run/lucilogpos","0")
+function m.on_commit(map)
+	local ucitracktest=uci:get("AdGuardHome","AdGuardHome","ucitracktest")
+	if ucitracktest=="1" then
+		return
+	elseif ucitracktest=="0" then
+		io.popen("/etc/init.d/AdGuardHome reload &")
+	else
+		if (fs.access("/var/run/AdGucitest")) then
+			uci:set("AdGuardHome","AdGuardHome","ucitracktest","0")
+			io.popen("/etc/init.d/AdGuardHome reload &")
+		else
+			fs.writefile("/var/run/AdGucitest","")
+			if (ucitracktest=="2") then
+				uci:set("AdGuardHome","AdGuardHome","ucitracktest","1")
+			else
+				uci:set("AdGuardHome","AdGuardHome","ucitracktest","2")
+			end
+		end
+		uci:save("AdGuardHome")
+		uci:commit("AdGuardHome")
+	end
+end
 return m
