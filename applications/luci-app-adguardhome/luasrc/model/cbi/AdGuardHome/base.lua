@@ -1,7 +1,7 @@
 require("luci.sys")
 require("luci.util")
 require("io")
-local m,s,o
+local m,s,o,o1
 local fs=require"nixio.fs"
 local uci=require"luci.model.uci".cursor()
 local configpath=uci:get("AdGuardHome","AdGuardHome","configpath") or "/etc/AdGuardHome.yaml"
@@ -29,22 +29,21 @@ o.description = translate("<input type=\"button\" style=\"width:210px;border-col
 local binmtime=uci:get("AdGuardHome","AdGuardHome","binmtime") or "0"
 local e=""
 if not fs.access(configpath) then
-	e=e.." no config"
+	e=e.." "..translate("no config")
 end
 if not fs.access(binpath) then
-	e=e.." no bin"
+	e=e.." "..translate("no core")
 else
-	local version
+	local version=uci:get("AdGuardHome","AdGuardHome","version")
 	local testtime=fs.stat(binpath,"mtime")
-	if testtime~=tonumber(binmtime) then
-		local tmp=luci.sys.exec("touch /var/run/AdGfakeconfig;"..binpath.." -c /var/run/AdGfakeconfig --check-config 2>&1| grep -m 1 -E 'v[0-9.]+' -o ;rm /var/run/AdGfakeconfig")
+	if testtime~=tonumber(binmtime) or version==nil then
+		local tmp=luci.sys.exec(binpath.." -c /dev/null --check-config 2>&1| grep -m 1 -E 'v[0-9.]+' -o")
 		version=string.sub(tmp, 1, -2)
+		if version=="" then version="core error" end
 		uci:set("AdGuardHome","AdGuardHome","version",version)
 		uci:set("AdGuardHome","AdGuardHome","binmtime",testtime)
 		uci:save("AdGuardHome")
 		uci:commit("AdGuardHome")
-	else
-		version=uci:get("AdGuardHome","AdGuardHome","version")
 	end
 	e=version..e
 end
@@ -202,16 +201,34 @@ o = s:option(Flag, "waitonboot", translate("Boot delay until network ok"))
 o.default = 1
 o.optional = true
 ---- backup workdir on shutdown
-o = s:option(Flag, "backupwd", translate("Backup workdir when shutdown"))
-o.default = 0
-o.optional = true
+local workdir=uci:get("AdGuardHome","AdGuardHome","workdir") or "/usr/bin/AdGuardHome"
+o = s:option(MultiValue, "backupfile", translate("Backup workdir files when shutdown"))
+o1 = s:option(Value, "backupwdpath", translate("Backup workdir path"))
+local name
+o:value("filters","filters")
+o:value("stats.db","stats.db")
+o:value("querylog.json","querylog.json")
+o1:depends ("backupfile", "filters")
+o1:depends ("backupfile", "stats.db")
+o1:depends ("backupfile", "querylog.json")
+for name in fs.glob(workdir.."/data/*")
+do
+	name=fs.basename (name)
+	if name~="filters" and name~="stats.db" and name~="querylog.json" then
+		o:value(name,name)
+		o1:depends ("backupfile", name)
+	end
+end
+o.widget = "checkbox"
+o.default = nil
+o.optional=false
 o.description=translate("Will be restore when workdir/data is empty")
 ----backup workdir path
-o = s:option(Value, "backupwdpath", translate("Backup workdir path"))
-o.default     = "/usr/bin/AdGuardHome"
-o.datatype    = "string"
-o.optional = true
-o.validate=function(self, value)
+
+o1.default     = "/usr/bin/AdGuardHome"
+o1.datatype    = "string"
+o1.optional = false
+o1.validate=function(self, value)
 if fs.stat(value,"type")=="reg" then
 	if m.message then
 	m.message =m.message.."\nerror!backup dir is a file"
@@ -226,19 +243,23 @@ else
 	return value
 end
 end
-----autoupdate
-o = s:option(Flag, "autoupdate", translate("Auto update core with crontab"))
-o.default = 0
-o.optional = true
-----cutquerylog
-o = s:option(Flag, "cutquerylog", translate("Auto tail querylog with crontab"))
-o.default = 0
-o.optional = true
+
+----Crontab
+o = s:option(MultiValue, "crontab", translate("Crontab task"),translate("Please change time and args in crontab"))
+o:value("autoupdate",translate("Auto update core"))
+o:value("cutquerylog",translate("Auto tail querylog"))
+o:value("cutruntimelog",translate("Auto tail runtime log"))
+o:value("autohost",translate("Auto update ipv6 hosts and restart adh"))
+o:value("autogfw",translate("Auto update gfwlist and restart adh"))
+o.widget = "checkbox"
+o.default = nil
+o.optional=true
+
 ----downloadpath
 o = s:option(TextValue, "downloadlinks",translate("Download links for update"))
 o.optional = false
 o.rows = 4
-o.wrap = "on"
+o.wrap = "soft"
 o.size=111
 o.cfgvalue = function(self, section)
 	return fs.readfile("/usr/share/AdGuardHome/links.txt")

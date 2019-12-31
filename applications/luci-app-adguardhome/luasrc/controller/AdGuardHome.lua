@@ -13,7 +13,35 @@ entry({"admin", "services", "AdGuardHome", "doupdate"}, call("do_update"))
 entry({"admin", "services", "AdGuardHome", "getlog"}, call("get_log"))
 entry({"admin", "services", "AdGuardHome", "dodellog"}, call("do_dellog"))
 entry({"admin", "services", "AdGuardHome", "reloadconfig"}, call("reload_config"))
+entry({"admin", "services", "AdGuardHome", "gettemplateconfig"}, call("get_template_config"))
 end 
+function get_template_config()
+	local b
+	local d=""
+	for cnt in io.lines("/tmp/resolv.conf.auto") do
+		b=string.match (cnt,"^[^#]*nameserver%s+([^%s]+)$")
+		if (b~=nil) then
+			d=d.."  - "..b.."\n"
+		end
+	end
+	local f=io.open("/usr/share/AdGuardHome/AdGuardHome_template.yaml", "r+")
+	local tbl = {}
+	local a=""
+	while (1) do
+    	a=f:read("*l")
+		if (a=="#bootstrap_dns") then
+			a=d
+		elseif (a=="#upstream_dns") then
+			a=d
+		elseif (a==nil) then
+			break
+		end
+		table.insert(tbl, a)
+	end
+	f:close()
+	http.prepare_content("text/plain; charset=utf-8")
+	http.write(table.concat(tbl, "\n"))
+end
 function reload_config()
 	fs.remove("/tmp/AdGuardHometmpconfig.yaml")
 	http.prepare_content("application/json")
@@ -29,15 +57,21 @@ function act_status()
 end
 function do_update()
 	fs.writefile("/var/run/lucilogpos","0")
+	http.prepare_content("application/json")
+	http.write('')
 	local arg
 	if luci.http.formvalue("force") == "1" then
 		arg="force"
 	else
 		arg=""
 	end
-	luci.sys.exec("(rm /var/run/update_core_error ; touch /var/run/update_core ; sh /usr/share/AdGuardHome/update_core.sh "..arg.." >/tmp/AdGuardHome_update.log 2>&1 || touch /var/run/update_core_error ;rm /var/run/update_core) &")
-	http.prepare_content("application/json")
-	http.write('')
+	if fs.access("/var/run/update_core") then
+		if arg=="force" then
+			luci.sys.exec("kill $(pgrep /usr/share/AdGuardHome/update_core.sh) ; sh /usr/share/AdGuardHome/update_core.sh "..arg.." >/tmp/AdGuardHome_update.log 2>&1 &")
+		end
+	else
+		luci.sys.exec("sh /usr/share/AdGuardHome/update_core.sh "..arg.." >/tmp/AdGuardHome_update.log 2>&1 &")
+	end
 end
 function get_log()
 	local logfile=uci:get("AdGuardHome","AdGuardHome","logfile")
